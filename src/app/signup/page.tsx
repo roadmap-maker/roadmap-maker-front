@@ -84,6 +84,7 @@ const InputContainer = styled.div<{ isPasswordMatch: boolean }>`
   & > p {
     font-size: 12px;
     color: ${({ isPasswordMatch }) => (isPasswordMatch ? 'green' : 'red')};
+  }
 `
 
 const Input = styled.input`
