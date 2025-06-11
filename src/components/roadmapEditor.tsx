@@ -4,7 +4,10 @@ import React, { useState } from 'react'
 import { v4 as uuid } from 'uuid'
 import axios from 'axios'
 import styled from '@emotion/styled'
+import { useMutation } from '@tanstack/react-query'
+import { createRoadmap, type RoadmapNode } from '@/api/roadmap'
 import LeftSidebar from './LeftSidebar'
+import Logo from '@/assets/logo'
 
 interface NodeType {
   id: string
@@ -16,6 +19,487 @@ interface NodeType {
 interface EdgeType {
   from: string
   to: string
+}
+
+const transformNodesToTree = (
+  nodes: NodeType[],
+  edges: EdgeType[]
+): RoadmapNode[] => {
+  const nodeMap = new Map<string, RoadmapNode>()
+  const rootNodes: RoadmapNode[] = []
+
+  // 먼저 모든 노드를 맵에 추가
+  nodes.forEach((node) => {
+    nodeMap.set(node.id, {
+      title: node.title,
+      x_coord: node.x,
+      y_coord: node.y,
+      children: [],
+    })
+  })
+
+  // 엣지를 순회하며 부모-자식 관계 설정
+  edges.forEach((edge) => {
+    const parentNode = nodeMap.get(edge.from)
+    const childNode = nodeMap.get(edge.to)
+    if (parentNode && childNode) {
+      parentNode.children.push(childNode)
+    }
+  })
+
+  // 루트 노드 찾기 (부모가 없는 노드들)
+  const childIds = new Set(edges.map((edge) => edge.to))
+  nodes.forEach((node) => {
+    if (!childIds.has(node.id)) {
+      const rootNode = nodeMap.get(node.id)
+      if (rootNode) {
+        rootNodes.push(rootNode)
+      }
+    }
+  })
+
+  return rootNodes
+}
+
+export default function RoadmapEditor() {
+  const [nodes, setNodes] = useState<NodeType[]>([])
+  const [edges, setEdges] = useState<EdgeType[]>([])
+  const [draggingId, setDraggingId] = useState<string | null>(null)
+  const [offset, setOffset] = useState({ x: 0, y: 0 })
+  const [connectingFrom, setConnectingFrom] = useState<NodeType | null>(null)
+  const [cursor, setCursor] = useState({ x: 0, y: 0 })
+  const [editableNodeId, setEditableNodeId] = useState<string | null>(null)
+  const [isConnecting, setIsConnecting] = useState(false)
+  const [editableTitle, setEditableTitle] = useState(false)
+  const [editableDesc, setEditableDesc] = useState(false)
+  const [titleText, setTitleText] = useState('제목')
+  const [descText, setDescText] = useState('설명')
+  const [showGuideTooltip, setShowGuideTooltip] = useState(false)
+  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null)
+
+  const createRoadmapMutation = useMutation({
+    mutationFn: createRoadmap,
+    onSuccess: (data) => {
+      alert('로드맵이 성공적으로 저장되었습니다!')
+      console.log('저장된 로드맵:', data)
+    },
+    onError: (error) => {
+      console.error('로드맵 저장 실패:', error)
+      alert('로드맵 저장 중 오류가 발생했습니다.')
+    },
+  })
+
+  const handleCanvasClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (connectingFrom || isConnecting || e.shiftKey) return
+    if (e.target !== e.currentTarget) return
+
+    const rect = e.currentTarget.getBoundingClientRect()
+    const newNode: NodeType = {
+      id: uuid(),
+      title: `노드 ${nodes.length + 1}`,
+      x: e.clientX - rect.left - 80,
+      y: e.clientY - rect.top - 20,
+    }
+    setNodes((prev) => [...prev, newNode])
+  }
+
+  const handleMouseDown = (e: React.MouseEvent, node: NodeType) => {
+    if (e.shiftKey) {
+      setConnectingFrom(node)
+      setIsConnecting(true)
+    } else {
+      setDraggingId(node.id)
+      setOffset({ x: e.clientX - node.x, y: e.clientY - node.y })
+    }
+  }
+
+  const handleMouseUp = (targetNode?: NodeType) => {
+    if (connectingFrom && targetNode && connectingFrom.id !== targetNode.id) {
+      const exists = edges.find(
+        (e) => e.from === connectingFrom.id && e.to === targetNode.id
+      )
+      if (!exists) {
+        setEdges((prev) => [
+          ...prev,
+          { from: connectingFrom.id, to: targetNode.id },
+        ])
+      }
+    }
+    setDraggingId(null)
+    setConnectingFrom(null)
+    setIsConnecting(false)
+  }
+
+  const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    const canvasRect = e.currentTarget.getBoundingClientRect()
+    const x = e.clientX - canvasRect.left
+    const y = e.clientY - canvasRect.top
+    setCursor({ x, y })
+
+    if (draggingId) {
+      setNodes((prev) =>
+        prev.map((n) =>
+          n.id === draggingId
+            ? { ...n, x: e.clientX - offset.x, y: e.clientY - offset.y }
+            : n
+        )
+      )
+    }
+  }
+
+  const deleteNode = (nodeId: string) => {
+    const descendantIds = getDescendants(nodeId)
+    const deleteIds = new Set([nodeId, ...descendantIds])
+    setNodes((prev) => prev.filter((n) => !deleteIds.has(n.id)))
+    setEdges((prev) =>
+      prev.filter((e) => !deleteIds.has(e.from) && !deleteIds.has(e.to))
+    )
+  }
+
+  const getDescendants = (id: string): string[] => {
+    const children = edges.filter((e) => e.from === id).map((e) => e.to)
+    return children.flatMap((childId) => [childId, ...getDescendants(childId)])
+  }
+
+  const deleteEdge = (edge: EdgeType) => {
+    setEdges((prev) =>
+      prev.filter((e) => !(e.from === edge.from && e.to === edge.to))
+    )
+  }
+
+  const handleSave = async () => {
+    const treeNodes = transformNodesToTree(nodes, edges)
+
+    const payload = {
+      title: titleText,
+      description: descText,
+      nodes: treeNodes,
+    }
+
+    createRoadmapMutation.mutate(payload)
+  }
+
+  const getConnectedNodes = (nodeId: string) => {
+    const connectedEdges = edges.filter((edge) => edge.from === nodeId)
+    return connectedEdges
+      .map((edge) => {
+        const targetNode = nodes.find((n) => n.id === edge.to)
+        return targetNode ? { id: edge.to, title: targetNode.title } : null
+      })
+      .filter((node): node is { id: string; title: string } => node !== null)
+  }
+
+  return (
+    <Container>
+      <LeftSidebar />
+      <Page>
+        <Header>
+          <HeaderContent>
+            <Title onDoubleClick={() => setEditableTitle(true)}>
+              {editableTitle ? (
+                <StyledInput
+                  autoFocus
+                  value={titleText}
+                  onChange={(e) => setTitleText(e.target.value)}
+                  onBlur={() => setEditableTitle(false)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === 'Escape')
+                      setEditableTitle(false)
+                  }}
+                />
+              ) : (
+                titleText
+              )}
+            </Title>
+            <Description onDoubleClick={() => setEditableDesc(true)}>
+              {editableDesc ? (
+                <StyledInput
+                  autoFocus
+                  value={descText}
+                  onChange={(e) => setDescText(e.target.value)}
+                  onBlur={() => setEditableDesc(false)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === 'Escape')
+                      setEditableDesc(false)
+                  }}
+                />
+              ) : (
+                descText
+              )}
+            </Description>
+          </HeaderContent>
+          <HelpButton
+            onMouseEnter={() => setShowGuideTooltip(true)}
+            onMouseLeave={() => setShowGuideTooltip(false)}
+          >
+            ?
+            <Tooltip visible={showGuideTooltip}>
+              <TooltipTitle>로드맵 만들기 가이드</TooltipTitle>
+              <TooltipList>
+                <TooltipItem>
+                  캔버스를 클릭하여 새로운 노드를 추가합니다.
+                </TooltipItem>
+                <TooltipItem>
+                  노드를 드래그하여 원하는 위치로 이동합니다.
+                </TooltipItem>
+                <TooltipItem>
+                  Shift 키를 누른 상태에서 노드를 클릭하면 연결 모드가
+                  시작됩니다.
+                </TooltipItem>
+                <TooltipItem>
+                  연결 모드에서 다른 노드를 클릭하면 두 노드가 연결됩니다.
+                </TooltipItem>
+                <TooltipItem>
+                  노드를 더블클릭하여 제목을 수정할 수 있습니다.
+                </TooltipItem>
+                <TooltipItem>
+                  노드에 마우스를 올리면 연결된 노드 목록이 표시됩니다.
+                </TooltipItem>
+                <TooltipItem>
+                  연결된 노드 목록에서 '연결 끊기' 버튼을 클릭하여 연결을 삭제할
+                  수 있습니다.
+                </TooltipItem>
+                <TooltipItem>
+                  노드에서 우클릭하여 노드를 삭제할 수 있습니다.
+                </TooltipItem>
+              </TooltipList>
+            </Tooltip>
+          </HelpButton>
+        </Header>
+
+        <Canvas
+          onClick={handleCanvasClick}
+          onMouseMove={handleMouseMove}
+          onContextMenu={(e) => {
+            e.preventDefault()
+          }}
+        >
+          <StyledSvg>
+            {edges.map((edge, i) => {
+              const from = nodes.find((n) => n.id === edge.from)
+              const to = nodes.find((n) => n.id === edge.to)
+              if (!from || !to) return null
+              return (
+                <line
+                  key={i}
+                  x1={from.x + 80}
+                  y1={from.y + 20}
+                  x2={to.x + 80}
+                  y2={to.y + 20}
+                  stroke="black"
+                  strokeWidth={2}
+                  markerEnd="url(#arrow)"
+                  onClick={() => deleteEdge(edge)}
+                  style={{ cursor: 'pointer' }}
+                />
+              )
+            })}
+            {connectingFrom && (
+              <line
+                x1={connectingFrom.x + 80}
+                y1={connectingFrom.y + 20}
+                x2={cursor.x}
+                y2={cursor.y}
+                stroke="gray"
+                strokeDasharray="4"
+                strokeWidth={1.5}
+              />
+            )}
+            <defs>
+              <marker
+                id="arrow"
+                markerWidth="10"
+                markerHeight="7"
+                refX="0"
+                refY="3.5"
+                orient="auto"
+              >
+                <polygon points="0 0, 10 3.5, 0 7" fill="black" />
+              </marker>
+            </defs>
+          </StyledSvg>
+
+          {nodes.map((node) => (
+            <Node
+              key={node.id}
+              style={{ left: node.x, top: node.y }}
+              dragging={draggingId === node.id}
+              onMouseDown={(e) => handleMouseDown(e, node)}
+              onMouseUp={() => handleMouseUp(node)}
+              onContextMenu={(e) => {
+                e.preventDefault()
+                if (confirm(`노드 "${node.title}" 삭제할까요?`))
+                  deleteNode(node.id)
+              }}
+              onDoubleClick={() => setEditableNodeId(node.id)}
+              onMouseEnter={() => setHoveredNodeId(node.id)}
+              onMouseLeave={() => setHoveredNodeId(null)}
+            >
+              {editableNodeId === node.id ? (
+                <StyledInput
+                  autoFocus
+                  value={node.title}
+                  onChange={(e) => {
+                    const value = e.target.value
+                    setNodes((prev) =>
+                      prev.map((n) =>
+                        n.id === node.id ? { ...n, title: value } : n
+                      )
+                    )
+                  }}
+                  onBlur={() => setEditableNodeId(null)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === 'Escape')
+                      setEditableNodeId(null)
+                  }}
+                />
+              ) : (
+                <>
+                  {node.title}
+                  {getConnectedNodes(node.id).length > 0 && (
+                    <NodeTooltip visible={hoveredNodeId === node.id}>
+                      <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>
+                        연결된 노드
+                      </div>
+                      <TooltipConnectionList>
+                        {getConnectedNodes(node.id).map((connectedNode) => (
+                          <TooltipConnectionItem key={connectedNode.id}>
+                            <span>→ {connectedNode.title}</span>
+                            <TooltipDisconnectButton
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                deleteEdge({
+                                  from: node.id,
+                                  to: connectedNode.id,
+                                })
+                              }}
+                            >
+                              연결 끊기
+                            </TooltipDisconnectButton>
+                          </TooltipConnectionItem>
+                        ))}
+                      </TooltipConnectionList>
+                    </NodeTooltip>
+                  )}
+                </>
+              )}
+            </Node>
+          ))}
+
+          <ButtonPanel>
+            <SaveButton
+              onClick={handleSave}
+              disabled={createRoadmapMutation.isPending}
+            >
+              {createRoadmapMutation.isPending ? (
+                <>
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    xmlns="http://www.w3.org/2000/svg"
+                    className="animate-spin"
+                  >
+                    <path
+                      d="M8 0C12.4183 0 16 3.58172 16 8C16 12.4183 12.4183 16 8 16C3.58172 16 0 12.4183 0 8C0 3.58172 3.58172 0 8 0ZM8 2C4.68629 2 2 4.68629 2 8C2 11.3137 4.68629 14 8 14C11.3137 14 14 11.3137 14 8C14 4.68629 11.3137 2 8 2Z"
+                      fill="currentColor"
+                      fillOpacity="0.2"
+                    />
+                    <path
+                      d="M8 0C12.4183 0 16 3.58172 16 8C16 12.4183 12.4183 16 8 16C3.58172 16 0 12.4183 0 8C0 3.58172 3.58172 0 8 0ZM8 2C4.68629 2 2 4.68629 2 8C2 11.3137 4.68629 14 8 14C11.3137 14 14 11.3137 14 8C14 4.68629 11.3137 2 8 2Z"
+                      fill="currentColor"
+                      className="opacity-75"
+                    />
+                  </svg>
+                  저장 중...
+                </>
+              ) : (
+                <>
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    xmlns="http://www.w3.org/2000/svg"
+                  >
+                    <path
+                      d="M13.3333 4L6 11.3333L2.66667 8"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                  저장하기
+                </>
+              )}
+            </SaveButton>
+          </ButtonPanel>
+        </Canvas>
+      </Page>
+      <RightSidebar>
+        <InfoBox>
+          <p>
+            <strong>작성자</strong>
+          </p>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+              marginTop: '0.5rem',
+            }}
+          >
+            <div
+              style={{
+                width: '24px',
+                height: '24px',
+                backgroundColor: '#d1d5db',
+                borderRadius: '50%',
+              }}
+            ></div>
+            <span>이의진</span>
+          </div>
+        </InfoBox>
+        <AdBox>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <Logo />
+            <p>RoadmapMaker</p>
+          </div>
+          <div>
+            <h1>
+              누군가의
+              <br />
+              로드맵에서
+              <br />
+              영감을 받아보세요
+            </h1>
+            <br />
+            <p>
+              나만의 로드맵을 만들기 전에
+              <br />
+              다른 사람들의 학습 설계를 살펴보세요
+            </p>
+          </div>
+          <div>
+            <button
+              style={{
+                width: '100%',
+                backgroundColor: 'black',
+                color: 'white',
+                border: 'none',
+                borderRadius: '5px',
+                padding: '14px 0',
+              }}
+            >
+              로드맵 보러가기
+            </button>
+          </div>
+        </AdBox>
+      </RightSidebar>
+    </Container>
+  )
 }
 
 const Container = styled.div`
@@ -85,10 +569,10 @@ const ButtonPanel = styled.div`
   z-index: 10;
 `
 
-const SaveButton = styled.button`
+const SaveButton = styled.button<{ disabled: boolean }>`
   padding: 0.75rem 1.5rem;
-  background-color: #000;
-  color: #fff;
+  background-color: ${(props) => (props.disabled ? '#d1d5db' : '#000')};
+  color: ${(props) => (props.disabled ? '#9ca3af' : '#fff')};
   border: none;
   border-radius: 0.5rem;
   font-size: 0.875rem;
@@ -100,12 +584,12 @@ const SaveButton = styled.button`
   transition: all 0.2s;
 
   &:hover {
-    background-color: #333;
-    transform: translateY(-1px);
+    background-color: ${(props) => (props.disabled ? '#e5e7eb' : '#333')};
+    transform: ${(props) => (props.disabled ? 'none' : 'translateY(-1px)')};
   }
 
   &:active {
-    transform: translateY(0);
+    transform: ${(props) => (props.disabled ? 'none' : 'translateY(0)')};
   }
 `
 
@@ -138,8 +622,6 @@ const StyledInput = styled.input`
   border-radius: 0.375rem;
   font-size: 0.875rem;
 `
-
-const Button = styled.button``
 
 const HelpButton = styled.button`
   width: 24px;
@@ -278,392 +760,14 @@ const RightSidebar = styled.aside`
   border-left: 1px solid #e5e7eb;
   display: flex;
   flex-direction: column;
+  justify-content: space-between;
 `
 
-export default function RoadmapEditor() {
-  const [nodes, setNodes] = useState<NodeType[]>([])
-  const [edges, setEdges] = useState<EdgeType[]>([])
-  const [draggingId, setDraggingId] = useState<string | null>(null)
-  const [offset, setOffset] = useState({ x: 0, y: 0 })
-  const [connectingFrom, setConnectingFrom] = useState<NodeType | null>(null)
-  const [cursor, setCursor] = useState({ x: 0, y: 0 })
-  const [editableNodeId, setEditableNodeId] = useState<string | null>(null)
-  const [isConnecting, setIsConnecting] = useState(false)
-  const [editableTitle, setEditableTitle] = useState(false)
-  const [editableDesc, setEditableDesc] = useState(false)
-  const [titleText, setTitleText] = useState('제목')
-  const [descText, setDescText] = useState('설명')
-  const [showGuideTooltip, setShowGuideTooltip] = useState(false)
-  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null)
-
-  const handleCanvasClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (connectingFrom || isConnecting || e.shiftKey) return
-    if (e.target !== e.currentTarget) return
-
-    const rect = e.currentTarget.getBoundingClientRect()
-    const newNode: NodeType = {
-      id: uuid(),
-      title: `노드 ${nodes.length + 1}`,
-      x: e.clientX - rect.left - 80,
-      y: e.clientY - rect.top - 20,
-    }
-    setNodes((prev) => [...prev, newNode])
-  }
-
-  const handleMouseDown = (e: React.MouseEvent, node: NodeType) => {
-    if (e.shiftKey) {
-      setConnectingFrom(node)
-      setIsConnecting(true)
-    } else {
-      setDraggingId(node.id)
-      setOffset({ x: e.clientX - node.x, y: e.clientY - node.y })
-    }
-  }
-
-  const handleMouseUp = (targetNode?: NodeType) => {
-    if (connectingFrom && targetNode && connectingFrom.id !== targetNode.id) {
-      const exists = edges.find(
-        (e) => e.from === connectingFrom.id && e.to === targetNode.id
-      )
-      if (!exists) {
-        setEdges((prev) => [
-          ...prev,
-          { from: connectingFrom.id, to: targetNode.id },
-        ])
-      }
-    }
-    setDraggingId(null)
-    setConnectingFrom(null)
-    setIsConnecting(false)
-  }
-
-  const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
-    const canvasRect = e.currentTarget.getBoundingClientRect()
-    const x = e.clientX - canvasRect.left
-    const y = e.clientY - canvasRect.top
-    setCursor({ x, y })
-
-    if (draggingId) {
-      setNodes((prev) =>
-        prev.map((n) =>
-          n.id === draggingId
-            ? { ...n, x: e.clientX - offset.x, y: e.clientY - offset.y }
-            : n
-        )
-      )
-    }
-  }
-
-  const deleteNode = (nodeId: string) => {
-    const descendantIds = getDescendants(nodeId)
-    const deleteIds = new Set([nodeId, ...descendantIds])
-    setNodes((prev) => prev.filter((n) => !deleteIds.has(n.id)))
-    setEdges((prev) =>
-      prev.filter((e) => !deleteIds.has(e.from) && !deleteIds.has(e.to))
-    )
-  }
-
-  const getDescendants = (id: string): string[] => {
-    const children = edges.filter((e) => e.from === id).map((e) => e.to)
-    return children.flatMap((childId) => [childId, ...getDescendants(childId)])
-  }
-
-  const deleteEdge = (edge: EdgeType) => {
-    setEdges((prev) =>
-      prev.filter((e) => !(e.from === edge.from && e.to === edge.to))
-    )
-  }
-
-  const handleSave = async () => {
-    const nodeMap: { [id: string]: any } = {}
-    nodes.forEach((node) => {
-      nodeMap[node.id] = { ...node, parent_id: null, children: [] }
-    })
-    edges.forEach((edge) => {
-      nodeMap[edge.to].parent_id = edge.from
-    })
-    Object.values(nodeMap).forEach((node) => {
-      if (node.parent_id) {
-        nodeMap[node.parent_id].children.push(node)
-      }
-    })
-    const rootNodes = Object.values(nodeMap).filter((n) => n.parent_id === null)
-
-    const payload = {
-      id: 'roadmap_id_xyz',
-      title: '내 심플 로드맵',
-      is_public: true,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-      nodes: rootNodes,
-    }
-
-    console.log(payload)
-
-    try {
-      await axios.post('/api/roadmaps/save', payload)
-      alert('저장 완료!')
-    } catch (e) {
-      console.error('저장 실패', e)
-      alert('저장 중 오류 발생')
-    }
-  }
-
-  const getConnectedNodes = (nodeId: string) => {
-    const connectedEdges = edges.filter((edge) => edge.from === nodeId)
-    return connectedEdges
-      .map((edge) => {
-        const targetNode = nodes.find((n) => n.id === edge.to)
-        return targetNode ? { id: edge.to, title: targetNode.title } : null
-      })
-      .filter((node): node is { id: string; title: string } => node !== null)
-  }
-
-  return (
-    <Container>
-      <LeftSidebar />
-      <Page>
-        <Header>
-          <HeaderContent>
-            <Title onDoubleClick={() => setEditableTitle(true)}>
-              {editableTitle ? (
-                <StyledInput
-                  autoFocus
-                  value={titleText}
-                  onChange={(e) => setTitleText(e.target.value)}
-                  onBlur={() => setEditableTitle(false)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === 'Escape')
-                      setEditableTitle(false)
-                  }}
-                />
-              ) : (
-                titleText
-              )}
-            </Title>
-            <Description onDoubleClick={() => setEditableDesc(true)}>
-              {editableDesc ? (
-                <StyledInput
-                  autoFocus
-                  value={descText}
-                  onChange={(e) => setDescText(e.target.value)}
-                  onBlur={() => setEditableDesc(false)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === 'Escape')
-                      setEditableDesc(false)
-                  }}
-                />
-              ) : (
-                descText
-              )}
-            </Description>
-          </HeaderContent>
-          <HelpButton
-            onMouseEnter={() => setShowGuideTooltip(true)}
-            onMouseLeave={() => setShowGuideTooltip(false)}
-          >
-            ?
-            <Tooltip visible={showGuideTooltip}>
-              <TooltipTitle>로드맵 만들기 가이드</TooltipTitle>
-              <TooltipList>
-                <TooltipItem>
-                  캔버스를 클릭하여 새로운 노드를 추가합니다.
-                </TooltipItem>
-                <TooltipItem>
-                  노드를 드래그하여 원하는 위치로 이동합니다.
-                </TooltipItem>
-                <TooltipItem>
-                  Shift 키를 누른 상태에서 노드를 클릭하면 연결 모드가
-                  시작됩니다.
-                </TooltipItem>
-                <TooltipItem>
-                  연결 모드에서 다른 노드를 클릭하면 두 노드가 연결됩니다.
-                </TooltipItem>
-                <TooltipItem>
-                  노드를 더블클릭하여 제목을 수정할 수 있습니다.
-                </TooltipItem>
-                <TooltipItem>
-                  노드에 마우스를 올리면 연결된 노드 목록이 표시됩니다.
-                </TooltipItem>
-                <TooltipItem>
-                  연결된 노드 목록에서 '연결 끊기' 버튼을 클릭하여 연결을 삭제할
-                  수 있습니다.
-                </TooltipItem>
-                <TooltipItem>
-                  노드에서 우클릭하여 노드를 삭제할 수 있습니다.
-                </TooltipItem>
-              </TooltipList>
-            </Tooltip>
-          </HelpButton>
-        </Header>
-
-        <Canvas
-          onClick={handleCanvasClick}
-          onMouseMove={handleMouseMove}
-          onContextMenu={(e) => {
-            e.preventDefault()
-            // 시점 이동 시작 등 향후 구현 가능
-          }}
-        >
-          <StyledSvg>
-            {edges.map((edge, i) => {
-              const from = nodes.find((n) => n.id === edge.from)
-              const to = nodes.find((n) => n.id === edge.to)
-              if (!from || !to) return null
-              return (
-                <line
-                  key={i}
-                  x1={from.x + 80}
-                  y1={from.y + 20}
-                  x2={to.x + 80}
-                  y2={to.y + 20}
-                  stroke="black"
-                  strokeWidth={2}
-                  markerEnd="url(#arrow)"
-                  onClick={() => deleteEdge(edge)}
-                  style={{ cursor: 'pointer' }}
-                />
-              )
-            })}
-            {connectingFrom && (
-              <line
-                x1={connectingFrom.x + 80}
-                y1={connectingFrom.y + 20}
-                x2={cursor.x}
-                y2={cursor.y}
-                stroke="gray"
-                strokeDasharray="4"
-                strokeWidth={1.5}
-              />
-            )}
-            <defs>
-              <marker
-                id="arrow"
-                markerWidth="10"
-                markerHeight="7"
-                refX="0"
-                refY="3.5"
-                orient="auto"
-              >
-                <polygon points="0 0, 10 3.5, 0 7" fill="black" />
-              </marker>
-            </defs>
-          </StyledSvg>
-
-          {nodes.map((node) => (
-            <Node
-              key={node.id}
-              style={{ left: node.x, top: node.y }}
-              dragging={draggingId === node.id}
-              onMouseDown={(e) => handleMouseDown(e, node)}
-              onMouseUp={() => handleMouseUp(node)}
-              onContextMenu={(e) => {
-                e.preventDefault()
-                if (confirm(`노드 "${node.title}" 삭제할까요?`))
-                  deleteNode(node.id)
-              }}
-              onDoubleClick={() => setEditableNodeId(node.id)}
-              onMouseEnter={() => setHoveredNodeId(node.id)}
-              onMouseLeave={() => setHoveredNodeId(null)}
-            >
-              {editableNodeId === node.id ? (
-                <StyledInput
-                  autoFocus
-                  value={node.title}
-                  onChange={(e) => {
-                    const value = e.target.value
-                    setNodes((prev) =>
-                      prev.map((n) =>
-                        n.id === node.id ? { ...n, title: value } : n
-                      )
-                    )
-                  }}
-                  onBlur={() => setEditableNodeId(null)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === 'Escape')
-                      setEditableNodeId(null)
-                  }}
-                />
-              ) : (
-                <>
-                  {node.title}
-                  {getConnectedNodes(node.id).length > 0 && (
-                    <NodeTooltip visible={hoveredNodeId === node.id}>
-                      <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>
-                        연결된 노드
-                      </div>
-                      <TooltipConnectionList>
-                        {getConnectedNodes(node.id).map((connectedNode) => (
-                          <TooltipConnectionItem key={connectedNode.id}>
-                            <span>→ {connectedNode.title}</span>
-                            <TooltipDisconnectButton
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                deleteEdge({
-                                  from: node.id,
-                                  to: connectedNode.id,
-                                })
-                              }}
-                            >
-                              연결 끊기
-                            </TooltipDisconnectButton>
-                          </TooltipConnectionItem>
-                        ))}
-                      </TooltipConnectionList>
-                    </NodeTooltip>
-                  )}
-                </>
-              )}
-            </Node>
-          ))}
-
-          <ButtonPanel>
-            <SaveButton onClick={handleSave}>
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 16 16"
-                fill="none"
-                xmlns="http://www.w3.org/2000/svg"
-              >
-                <path
-                  d="M13.3333 4L6 11.3333L2.66667 8"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-              저장하기
-            </SaveButton>
-          </ButtonPanel>
-        </Canvas>
-      </Page>
-      <RightSidebar>
-        <InfoBox>
-          <p>
-            <strong>작성자</strong>
-          </p>
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem',
-              marginTop: '0.5rem',
-            }}
-          >
-            <div
-              style={{
-                width: '24px',
-                height: '24px',
-                backgroundColor: '#d1d5db',
-                borderRadius: '50%',
-              }}
-            ></div>
-            <span>이의진</span>
-          </div>
-        </InfoBox>
-      </RightSidebar>
-    </Container>
-  )
-}
+const AdBox = styled.div`
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #dedede;
+  padding: 24px;
+  border-radius: 10px;
+  gap: 52px;
+`
