@@ -5,7 +5,12 @@ import { v4 as uuid } from 'uuid'
 import axios from 'axios'
 import styled from '@emotion/styled'
 import { useMutation } from '@tanstack/react-query'
-import { createRoadmap, type RoadmapNode } from '@/api/roadmap'
+import {
+  createRoadmap,
+  updateRoadmap,
+  type CreateRoadmapRequest,
+  type RoadmapNode,
+} from '@/api/roadmap'
 import LeftSidebar from './LeftSidebar'
 import Logo from '@/assets/logo'
 
@@ -21,12 +26,35 @@ interface EdgeType {
   to: string
 }
 
+interface EditorNode {
+  title: string
+  x_coord: number
+  y_coord: number
+  children: EditorNode[]
+}
+
+interface RoadmapEditorProps {
+  mode?: 'create' | 'edit'
+  roadmapId?: number
+  initialTitle?: string
+  initialDescription?: string
+  initialNodes?: NodeType[]
+  initialEdges?: EdgeType[]
+}
+
+interface SaveNode {
+  title: string
+  x_coord: number
+  y_coord: number
+  children: SaveNode[]
+}
+
 const transformNodesToTree = (
   nodes: NodeType[],
   edges: EdgeType[]
-): RoadmapNode[] => {
-  const nodeMap = new Map<string, RoadmapNode>()
-  const rootNodes: RoadmapNode[] = []
+): EditorNode[] => {
+  const nodeMap = new Map<string, EditorNode>()
+  const rootNodes: EditorNode[] = []
 
   // 먼저 모든 노드를 맵에 추가
   nodes.forEach((node) => {
@@ -61,9 +89,56 @@ const transformNodesToTree = (
   return rootNodes
 }
 
-export default function RoadmapEditor() {
-  const [nodes, setNodes] = useState<NodeType[]>([])
-  const [edges, setEdges] = useState<EdgeType[]>([])
+const transformNodesToSaveFormat = (
+  nodes: NodeType[],
+  edges: EdgeType[]
+): SaveNode[] => {
+  const nodeMap = new Map<string, SaveNode>()
+  const rootNodes: SaveNode[] = []
+
+  // 먼저 모든 노드를 맵에 추가
+  nodes.forEach((node) => {
+    nodeMap.set(node.id, {
+      title: node.title,
+      x_coord: node.x,
+      y_coord: node.y,
+      children: [],
+    })
+  })
+
+  // 엣지를 순회하며 부모-자식 관계 설정
+  edges.forEach((edge) => {
+    const parentNode = nodeMap.get(edge.from)
+    const childNode = nodeMap.get(edge.to)
+    if (parentNode && childNode) {
+      parentNode.children.push(childNode)
+    }
+  })
+
+  // 루트 노드 찾기 (부모가 없는 노드들)
+  const childIds = new Set(edges.map((edge) => edge.to))
+  nodes.forEach((node) => {
+    if (!childIds.has(node.id)) {
+      const rootNode = nodeMap.get(node.id)
+      if (rootNode) {
+        rootNodes.push(rootNode)
+      }
+    }
+  })
+
+  return rootNodes
+}
+
+export default function RoadmapEditor({
+  mode = 'create',
+  roadmapId,
+  initialTitle = '제목',
+  initialDescription = '설명',
+  initialNodes = [],
+  initialEdges = [],
+}: RoadmapEditorProps) {
+  const [nodes, setNodes] = useState<NodeType[]>(initialNodes)
+  const [edges, setEdges] = useState<EdgeType[]>(initialEdges)
   const [draggingId, setDraggingId] = useState<string | null>(null)
   const [offset, setOffset] = useState({ x: 0, y: 0 })
   const [connectingFrom, setConnectingFrom] = useState<NodeType | null>(null)
@@ -72,8 +147,8 @@ export default function RoadmapEditor() {
   const [isConnecting, setIsConnecting] = useState(false)
   const [editableTitle, setEditableTitle] = useState(false)
   const [editableDesc, setEditableDesc] = useState(false)
-  const [titleText, setTitleText] = useState('제목')
-  const [descText, setDescText] = useState('설명')
+  const [titleText, setTitleText] = useState(initialTitle)
+  const [descText, setDescText] = useState(initialDescription)
   const [showGuideTooltip, setShowGuideTooltip] = useState(false)
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null)
 
@@ -86,6 +161,21 @@ export default function RoadmapEditor() {
     onError: (error) => {
       console.error('로드맵 저장 실패:', error)
       alert('로드맵 저장 중 오류가 발생했습니다.')
+    },
+  })
+
+  const updateRoadmapMutation = useMutation({
+    mutationFn: (data: CreateRoadmapRequest) => {
+      if (!roadmapId) throw new Error('로드맵 ID가 필요합니다.')
+      return updateRoadmap(roadmapId, data)
+    },
+    onSuccess: (data) => {
+      alert('로드맵이 성공적으로 수정되었습니다!')
+      console.log('수정된 로드맵:', data)
+    },
+    onError: (error) => {
+      console.error('로드맵 수정 실패:', error)
+      alert('로드맵 수정 중 오류가 발생했습니다.')
     },
   })
 
@@ -168,15 +258,19 @@ export default function RoadmapEditor() {
   }
 
   const handleSave = async () => {
-    const treeNodes = transformNodesToTree(nodes, edges)
+    const saveNodes = transformNodesToSaveFormat(nodes, edges)
 
     const payload = {
       title: titleText,
       description: descText,
-      nodes: treeNodes,
+      nodes: saveNodes,
     }
 
-    createRoadmapMutation.mutate(payload)
+    if (mode === 'edit') {
+      updateRoadmapMutation.mutate(payload)
+    } else {
+      createRoadmapMutation.mutate(payload)
+    }
   }
 
   const getConnectedNodes = (nodeId: string) => {
@@ -389,9 +483,13 @@ export default function RoadmapEditor() {
           <ButtonPanel>
             <SaveButton
               onClick={handleSave}
-              disabled={createRoadmapMutation.isPending}
+              disabled={
+                createRoadmapMutation.isPending ||
+                updateRoadmapMutation.isPending
+              }
             >
-              {createRoadmapMutation.isPending ? (
+              {createRoadmapMutation.isPending ||
+              updateRoadmapMutation.isPending ? (
                 <>
                   <svg
                     width="16"
@@ -412,7 +510,7 @@ export default function RoadmapEditor() {
                       className="opacity-75"
                     />
                   </svg>
-                  저장 중...
+                  {mode === 'edit' ? '수정 중...' : '저장 중...'}
                 </>
               ) : (
                 <>
@@ -431,7 +529,7 @@ export default function RoadmapEditor() {
                       strokeLinejoin="round"
                     />
                   </svg>
-                  저장하기
+                  {mode === 'edit' ? '수정하기' : '저장하기'}
                 </>
               )}
             </SaveButton>
