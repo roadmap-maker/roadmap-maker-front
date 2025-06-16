@@ -1,36 +1,39 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# RoadmapMaker
 
-## Getting Started
+## 사회 문제 및 프로젝트의 필요성
+IT 학습이나 커리어를 설계할 때 체계적인 로드맵을 찾기 어렵다는 문제가 있습니다. 개인의 경험이나 여러 자료를 모아 보고 싶은 내용을 정리하려 해도 이를 시각적으로 구성하고 공유하기가 쉽지 않습니다. **RoadmapMaker**는 이러한 문제를 해결하기 위해 누구나 간단히 학습 로드맵을 작성하고 다른 사람과 공유할 수 있는 도구를 제공하는 프로젝트입니다.
 
-First, run the development server:
+## 사용한 라이브러리
+- [Next.js](https://nextjs.org) 15
+- React 19 및 TypeScript
+- [@emotion/react](https://emotion.sh/docs/@emotion/react) / styled
+- [@tanstack/react-query](https://tanstack.com/query/latest)
+- axios
+- js-cookie
+- uuid
+
+## 구현된 기능
+- 회원가입 및 로그인 기능 (`src/app/signup`, `src/app/signin`)
+- 로드맵 생성 및 수정 화면 (`src/app/edit`)
+  - 노드 추가·이동·삭제
+  - 노드 간 연결 및 연결 해제
+  - 제목과 설명을 실시간으로 편집
+  - 작성한 로드맵을 서버에 저장하고 수정 가능
+- 저장된 로드맵 불러오기 (`src/app/edit/[id]`)
+- 인증 토큰을 쿠키에 저장하고 Axios 인터셉터를 통해 자동으로 헤더에 포함
+- React Query를 이용한 데이터 패칭과 캐싱
+
+## 화면 설계
+- **로그인/회원가입 페이지** : 심플한 입력 폼과 오류 메시지 표시 기능을 제공합니다.
+- **로드맵 편집 화면** : 좌측 사이드바에는 메뉴와 검색창이, 중앙 캔버스에는 드래그 가능한 노드와 연결선이 배치됩니다. 우측 사이드바에는 작성자 정보와 간단한 안내 영역이 표시됩니다. 노드를 더블클릭하면 제목을 수정할 수 있고, 연결 모드에서는 노드 간의 관계를 쉽게 설정할 수 있습니다. 도움말 버튼을 통해 로드맵 사용 방법 툴팁도 확인할 수 있습니다.
+
+## 개발 환경 설정
+아래 명령어로 개발 서버를 실행할 수 있습니다.
 
 ```bash
 npm run dev
 # or
 yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
-
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
-
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+브라우저에서 [http://localhost:3000](http://localhost:3000)을 열면 애플리케이션을 확인할 수 있습니다.
